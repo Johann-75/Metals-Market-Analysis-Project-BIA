@@ -1,0 +1,16 @@
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+scheduler.log
+
+# Streamlit config
+.streamlit/
+
+# Mac/Windows junk
+.DS_Store
+Thumbs.db

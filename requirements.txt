@@ -1,0 +1,8 @@
+requests
+supabase
+python-dotenv
+pandas
+streamlit
+plotly
+psycopg2-binary
+apscheduler

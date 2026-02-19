@@ -23,14 +23,12 @@ def job():
 
 if __name__ == "__main__":
     scheduler = BlockingScheduler()
-    # Schedule to run every 1 hour
-    scheduler.add_job(job, 'interval', hours=1)
+    # Schedule to run daily at 12:30 UTC (18:00 IST)
+    scheduler.add_job(job, 'cron', hour=12, minute=30)
     
-    logger.info("Scheduler started. Running ETL every 1 hour. Press Ctrl+C to exit.")
+    logger.info("Scheduler started. Running ETL daily at 12:30 UTC (18:00 IST). Press Ctrl+C to exit.")
     
-    # Run immediately on startup? 
-    # User might want to ensure data is fresh on start, but let's stick to interval.
-    # Actually, often good to run once on start.
+    # Run immediately on startup for verification
     logger.info("Running initial ETL job...")
     job()
     

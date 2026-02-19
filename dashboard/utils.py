@@ -2,17 +2,13 @@ import streamlit as st
 import pandas as pd
 from backend.analytics import (
     get_data_for_analytics,
-    calculate_daily_change,
-    calculate_moving_averages,
-    get_correlation_matrix,
-    detect_volatility,
-    identify_most_volatile
+    calculate_daily_change
 )
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
-def load_data():
+def load_data(currency="INR"):
     """Fetch analytics data with caching."""
-    df = get_data_for_analytics()
+    df = get_data_for_analytics(currency=currency)
     return df
 
 def get_kpi_metrics(df, metal_name, market_name="Spot"):

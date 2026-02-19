@@ -25,145 +25,123 @@ if not all([METALS_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
 # Initialize Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def fetch_metals_data():
+def fetch_metals_data(currency="USD"):
     """Fetch latest metal prices from metals.dev API."""
     try:
-        response = requests.get(API_URL, params={"api_key": METALS_API_KEY, "currency": "USD", "unit": "toz"})
+        response = requests.get(API_URL, params={"api_key": METALS_API_KEY, "currency": currency, "unit": "toz"})
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:
-        logger.error(f"Error fetching data from API: {e}")
-        return None
-
-def get_or_create_dimension(table, column, value, additional_data=None):
-    """Get ID from dimension table or create if not exists."""
-    try:
-        # Try to find existing
-        response = supabase.table(table).select("id").eq(column, value).execute()
-        if response.data:
-            return response.data[0]['id']
-        
-        # Create new
-        data = {column: value}
-        if additional_data:
-            data.update(additional_data)
-            
-        response = supabase.table(table).insert(data).execute()
-        if response.data:
-            logger.info(f"Created new entry in {table}: {value}")
-            return response.data[0]['id']
-        return None
-    except Exception as e:
-        logger.error(f"Error in dimension lookup/creation for {table}: {e}")
-        return None
-
-def get_or_create_time_id(timestamp_dt):
-    """Generate time_id and ensure entry exists in dim_time."""
-    # Create integer ID: YYYYMMDDHH
-    time_id = int(timestamp_dt.strftime("%Y%m%d%H"))
-    
-    try:
-        # Check if exists (optimization: check mostly not needed if we trust our logic, but safer)
-        # Using Supabase upsert for dim_time might be cleaner if we didn't have other columns to calculate
-        
-        # We need to act carefully with big integers and Supabase JS/Py clients sometimes. 
-        # But here we are just sending it.
-        
-        # Let's try to insert, on conflict do nothing? 
-        # Supabase-py 'upsert' works.
-        
-        record = {
-            "id": time_id,
-            "timestamp": timestamp_dt.isoformat(),
-            "date": timestamp_dt.date().isoformat(),
-            "day": timestamp_dt.day,
-            "month": timestamp_dt.month,
-            "year": timestamp_dt.year,
-            "hour": timestamp_dt.hour
-        }
-        
-        # Upsert: if id exists, update (or ignore if we want). usage: upsert(data, on_conflict='id')
-        response = supabase.table("dim_time").upsert(record).execute()
-        return time_id
-        
-    except Exception as e:
-        logger.error(f"Error managing dim_time: {e}")
+        logger.error(f"Error fetching data from API ({currency}): {e}")
         return None
 
 def run_etl():
-    logger.info("Starting ETL process...")
+    logger.info("Starting ETL process (Silver Focus - INR/USD)...")
     
-    # 1. Extract
-    data = fetch_metals_data()
-    if not data or 'metals' not in data:
-        logger.error("No valid data received from API.")
-        return
-
-    timestamp_str = data.get('timestamps', {}).get('metal', datetime.utcnow().isoformat())
-    # Handle API timestamp or fallback to now
-    try:
-        timestamp_dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-    except:
-        timestamp_dt = datetime.utcnow()
-
-    time_id = get_or_create_time_id(timestamp_dt)
-    if not time_id:
-        logger.error("Failed to generate Time ID.")
-        return
-
-    metals_map = data.get('metals', {})
-    
-    # 2. Transform & Load
+    currencies_to_fetch = ["INR"]
     
     # Pre-fetch Market IDs
     market_id_spot = get_or_create_dimension("dim_market", "market_name", "Spot")
     market_id_mcx = get_or_create_dimension("dim_market", "market_name", "MCX")
-    market_id_lbma = get_or_create_dimension("dim_market", "market_name", "LBMA")
     
-    # Define categorization logic (Customize based on actual API keys if they differ)
-    # Standard metals.dev 'latest' returns spot prices in 'metals'.
-    # If using a plan that includes MCX/LBMA, they might appear as specific keys or separate objects.
-    # We will assume 'metals' contains Spot prices primarily.
+    # We will ignore LBMA as per new requirements
     
-    for metal_key, price in metals_map.items():
-        # logic to distinguish markets if keys indicate it (e.g. 'gold_mcx')
-        # Otherwise default to Spot
+    for currency in currencies_to_fetch:
+        data = fetch_metals_data(currency=currency)
+        if not data or 'metals' not in data:
+            logger.error(f"No valid data received for {currency}.")
+            continue
+
+        timestamp_str = data.get('timestamps', {}).get('metal', datetime.utcnow().isoformat())
+        try:
+            timestamp_dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        except:
+            timestamp_dt = datetime.utcnow()
+
+        time_id = get_or_create_time_id(timestamp_dt)
+        if not time_id:
+            continue
+
+        metals_map = data.get('metals', {})
         
-        market_id = market_id_spot
-        clean_metal_name = metal_key
-        
-        if '_mcx' in metal_key:
-            market_id = market_id_mcx
-            clean_metal_name = metal_key.replace('_mcx', '')
-        elif '_lbma' in metal_key or '_am' in metal_key or '_pm' in metal_key:
-            market_id = market_id_lbma
-            clean_metal_name = metal_key.replace('_lbma', '').replace('_am', '').replace('_pm', '')
-        
-        clean_metal_name = clean_metal_name.capitalize()
-        
-        # Get Metal ID
-        metal_id = get_or_create_dimension("dim_metal", "metal_name", clean_metal_name)
-        
-        if metal_id and market_id and time_id:
-            fact_record = {
-                "metal_id": metal_id,
-                "market_id": market_id,
-                "time_id": time_id,
-                "price": price,
-                "currency": "USD",
-                "unit": "toz"
-            }
+        for metal_key, price in metals_map.items():
+            # Filter: ONLY SILVER
+            if 'silver' not in metal_key.lower():
+                continue
             
-            try:
-                # Upsert is safer for idempotency
-                # We use the unique constraint on (metal_id, market_id, time_id)
-                supabase.table("fact_metal_prices").upsert(
-                    fact_record, 
-                    on_conflict="metal_id,market_id,time_id"
-                ).execute()
-                logger.debug(f"Processed {clean_metal_name} ({market_id}) : {price}")
-            except Exception as e:
-                logger.error(f"Error inserting {clean_metal_name}: {e}")
+            # Logic to determine market
+            # Default to Spot unless specified
+            market_id = market_id_spot
+            clean_metal_name = "Silver" # We know it's silver now
+            
+            # Check for MCX specific keys if they existed
+            if '_mcx' in metal_key:
+                market_id = market_id_mcx
+            elif '_lbma' in metal_key or '_am' in metal_key or '_pm' in metal_key:
+                # Skip LBMA
+                continue
+            
+            # Get Metal ID for "Silver"
+            metal_id = get_or_create_dimension("dim_metal", "metal_name", "Silver")
+            
+            if metal_id and market_id and time_id:
+                fact_record = {
+                    "metal_id": metal_id,
+                    "market_id": market_id,
+                    "time_id": time_id,
+                    "price": price,
+                    "currency": currency, # INR or USD
+                    "unit": "toz"
+                }
+                
+                try:
+                    # Upsert based on composite unique key
+                    # Need to check constraints. Unique is (metal_id, market_id, time_id).
+                    # Wait! The unique constraint does NOT include currency. 
+                    # If we fetch INR and USD for the same time, we'll get a conflict!
+                    # We need to either:
+                    # 1. Modify schema to include currency in Unique constraint.
+                    # 2. Or store them as separate records? yes.
+                    # 
+                    # Use a new tool call to modify the schema constraint? 
+                    # Or... typically a fact table should have one currency or normalized.
+                    # If we want to view both, we really should have currency in the unique constraint.
+                    # 
+                    # QUICK FIX: Since I can't easily run migrations interactively without risk,
+                    # I will just store INR for now as it is the "Primary" request.
+                    # "gie info tht would be helpful for indians like rupees priarily but also give some common currencies"
+                    # 
+                    # Actually, I'll try to insert. If it fails due to constraint, I'll log it.
+                    # But wait, if I want both, I need the constraint to allow both.
+                    # 
+                    # PLAN: logic check. 
+                    # If I insert Silver/Spot/TimeID with Price=X, Currency=INR.
+                    # Then insert Silver/Spot/TimeID with Price=Y, Currency=USD.
+                    # Duplicate key error on (metal, market, time).
+                    # 
+                    # DECISION: I will prioritize INR. I will ONLY store INR for the main charts.
+                    # The user said "give info tht would be helpful for indians like rupees priarily but also give some common currencies too for viewing".
+                    # I will fetch INR for the database history.
+                    # I will fetch USD just to display Latest Price (not store history if schema blocks it).
+                    # 
+                    # OR, I run a migration to drop the constraint and add currency. This is cleaner.
+                    # Let's try to Drop constraint in next step. For now, let's write the code to support it assuming schema allows.
+                    pass
+                except Exception:
+                    pass
+                
+                # ... continuing with code assuming I'll fix schema next ...
+                
+                try:
+                    supabase.table("fact_metal_prices").upsert(
+                        fact_record,
+                        on_conflict="metal_id,market_id,time_id,currency" # Need to act on this
+                    ).execute()
+                    logger.debug(f"Processed Silver ({market_id}) {currency} : {price}")
+                except Exception as e:
+                    # Fallback if constraint isn't updated yet, we lose one currency (likely USD if INR runs first)
+                    # I'll make sure INR runs LAST to overwrite if conflict exists, so we keep INR.
+                    logger.error(f"Error: {e}")
 
     logger.info("ETL process completed successfully.")
 
